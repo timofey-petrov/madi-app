@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
+server/data/outbox/
+server/uploads/
+web/node_modules/
+web/dist/

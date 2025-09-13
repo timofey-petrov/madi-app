@@ -1,0 +1,14 @@
+services:
+  madi-app:
+    build:
+      context: ./server
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
+    volumes:
+      - ./server/data:/app/data
+      - ./server/uploads:/app/uploads
+    restart: unless-stopped
+
