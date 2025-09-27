@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>МАДИ — Вход</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module">
+      import { api, setToken, token, me, toast, clearToken, initTheme, toggleTheme } from '/app.js';
+      window.addEventListener('DOMContentLoaded', async () => {
+        initTheme();
+        const user = await me();
+        if (user) {
+          // Если уже авторизованы, сразу отправляем в команды
+          location.href = '/teams.html';
+          return;
+        }
+        document.getElementById('themeBtn').addEventListener('click', toggleTheme);
+        document.getElementById('loginForm').addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          const f = new FormData(e.target);
+          try{
+            const d = await api('/api/auth/login', { method:'POST', body: JSON.stringify({ email: f.get('email'), password: f.get('password') }) });
+            setToken(d.token); location.href = '/teams.html';
+          }catch(err){ toast('Ошибка входа', 'error'); }
+        });
+        document.getElementById('regForm').addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          const f = new FormData(e.target);
+          try{
+            const d = await api('/api/auth/register', { method:'POST', body: JSON.stringify({ name: f.get('name'), email: f.get('email'), password: f.get('password'), role: f.get('role') }) });
+            setToken(d.token); location.href = '/teams.html';
+          }catch(err){ toast('Ошибка регистрации', 'error'); }
+        });
+      });
+    </script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="brand"><a href="/">МАДИ</a></div>
+        <div class="nav"><button id="themeBtn" class="theme-toggle">Тема</button></div>
+      </div>
+      <div class="card hero" style="display:none"></div>
+      <div class="grid grid-2" style="margin-top:16px">
+        <form id="loginForm" class="card" autocomplete="off" method="post" action="#">
+          <h3>Вход</h3>
+          <label>Email</label>
+          <input name="email" placeholder="you@madi.ru" required autocomplete="off" />
+          <label>Пароль</label>
+          <input name="password" type="password" placeholder="••••••••" required autocomplete="off" />
+          <button class="primary" style="margin-top:8px">Войти</button>
+        </form>
+        <form id="regForm" class="card" autocomplete="off" method="post" action="#">
+          <h3>Регистрация</h3>
+          <label>Имя</label>
+          <input name="name" placeholder="Имя" required autocomplete="off" />
+          <label>Роль</label>
+          <select name="role">
+            <option value="student">Студент</option>
+            <option value="teacher">Преподаватель</option>
+          </select>
+          <label>Email</label>
+          <input name="email" placeholder="you@madi.ru" required autocomplete="off" />
+          <label>Пароль</label>
+          <input name="password" type="password" placeholder="Минимум 6 символов" required autocomplete="off" />
+          <button class="primary" style="margin-top:8px">Создать аккаунт</button>
+        </form>
+      </div>
+    </div>
+  </body>
+  </html>
