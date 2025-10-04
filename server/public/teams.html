@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>МАДИ — Чаты</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module">
+      import { api, me, toast, initTheme, toggleTheme } from '/app.js';
+      let currentUser = null; let activeChatId = null; let role = 'member'; let socket;
+      const typingMap = new Map();
+
+      function renderTyping(){
+        const bar = document.getElementById('typing');
+        const names = Array.from(typingMap.values());
+        if (!names.length) { bar.textContent = ''; bar.style.display='none'; }
+        else { bar.textContent = names.join(', ') + ' печатает…'; bar.style.display='block'; }
+      }
+      function handleTyping(e){
+        if (!socket || !activeChatId) return;
+        socket.emit('typing', { chatId: activeChatId });
+      }
+
+      async function loadChats(){
+        const d = await api('/api/chats');
+        const list = document.getElementById('chatList');
+        list.innerHTML = '';
+        d.chats.forEach(c => {
+          const li = document.createElement('li');
+          li.className = 'row';
+          li.style.justifyContent = 'space-between';
+          li.innerHTML = `<div><b>${c.title}</b><div class="muted" style="font-size:12px">${c.last_message ? c.last_message.slice(0,60) : 'Без сообщений'}</div></div>`;
+          const btn = document.createElement('button'); btn.className='btn'; btn.textContent='Открыть';
+          btn.addEventListener('click', ()=> openChat(c.id));
+          li.appendChild(btn); list.appendChild(li);
+        });
+        if (!activeChatId && d.chats[0]) openChat(d.chats[0].id);
+      }
+
+      async function openChat(id){
+        activeChatId = id;
+        const meta = await api(`/api/chats/${id}`);
+        document.getElementById('chatTitle').textContent = meta.title;
+        await loadMembers();
+        await loadMessages();
+        if (!socket) {
+          initSocket();
+        } else if (socket.connected) {
+          socket.emit('join', { chatId: id });
+        }
+        document.getElementById('composer-input').focus();
+      }
+
+      async function loadMembers(){
+        const d = await api(`/api/chats/${activeChatId}/members`);
+        const my = d.members.find(m => m.id === currentUser.id);
+        role = my?.role || 'member';
+        const rt = document.getElementById('roleTag'); if (rt) rt.textContent = role;
+        const ul = document.getElementById('memberList'); ul.innerHTML='';
+        const delBtn = document.getElementById('deleteBtn'); if (delBtn) delBtn.style.display = (role==='owner') ? 'inline-block' : 'none';
+        d.members.forEach(u=>{
+          const li = document.createElement('li');
+          li.innerHTML = `<div class="row" style="justify-content:space-between">
+            <div>${u.name} <span class="tag">${u.role}</span></div>
+            ${ (role === 'owner' || role === 'moderator') && u.id !== currentUser.id ? `<button class="btn" data-kick="${u.id}">Исключить</button>` : ''}
+          </div>`;
+          ul.appendChild(li);
+        });
+        // Add role selector controls dynamically (owner/moderator only)
+        if (role === 'owner' || role === 'moderator') {
+          const lis = ul.querySelectorAll('li');
+          d.members.forEach((u, i) => {
+            if (u.id === currentUser.id) return;
+            const controls = lis[i]?.querySelector('.row:last-child');
+            if (!controls) return;
+            const sel = document.createElement('select');
+            sel.setAttribute('data-role', String(u.id));
+            ['member','moderator'].forEach(r => { const opt = document.createElement('option'); opt.value = r; opt.textContent = r; if (u.role === r) opt.selected = true; sel.appendChild(opt); });
+            controls.prepend(sel);
+          });
+        }
+        ul.querySelectorAll('[data-kick]').forEach(btn => btn.addEventListener('click', async (e)=>{
+          const uid = e.currentTarget.getAttribute('data-kick');
+          await api(`/api/chats/${activeChatId}/members/${uid}`, { method:'DELETE' });
+          toast('Участник удалён'); loadMembers();
+        }));
+        // Change roles (owner/moderator only) — set by re-POSTing with new role
+        ul.querySelectorAll('select[data-role]').forEach(sel => sel.addEventListener('change', async (e)=>{
+          const uid = e.currentTarget.getAttribute('data-role');
+          const newRole = e.currentTarget.value;
+          await api(`/api/chats/${activeChatId}/members`, { method:'POST', body: JSON.stringify({ userId: Number(uid), role: newRole }) });
+          toast('Роль обновлена'); loadMembers();
+        }));
+      }
+
+      async function loadMessages(){
+        const d = await api(`/api/chats/${activeChatId}/messages`);
+        const box = document.getElementById('messages'); box.innerHTML='';
+        d.messages.forEach(m => addMessage(m));
+        box.scrollTop = box.scrollHeight;
+      }
+
+      function addMessage(m){
+        const meMsg = m.user_id === currentUser.id;
+        const wrap = document.createElement('div');
+        wrap.className = 'msg ' + (meMsg ? 'me' : 'other');
+        const meta = document.createElement('div'); meta.className='meta'; meta.textContent = `${m.user_name} • ${new Date(m.created_at).toLocaleString()}`;
+        const bubble = document.createElement('div'); bubble.className='bubble';
+        if (m.type === 'text') bubble.innerHTML = m.content || '';
+        else if (m.type === 'video') bubble.innerHTML = `<div><video controls src="${m.attachment_path}"></video><div class="muted">${m.attachment_name}</div>${m.content?('<div>'+m.content+'</div>'):''}</div>`;
+        else bubble.innerHTML = `<a href="${m.attachment_path}" target="_blank">${m.attachment_name}</a>${m.content?('<div>'+m.content+'</div>'):''}`;
+        wrap.appendChild(meta); wrap.appendChild(bubble);
+        if (meMsg || role === 'owner' || role === 'moderator'){
+          const tools = document.createElement('div'); tools.className='row'; tools.style.gap='6px'; tools.style.marginTop='4px';
+          const edit = document.createElement('button'); edit.className='btn ghost'; edit.textContent='Редактировать';
+          edit.addEventListener('click', async ()=>{ const nt = prompt('Изменить сообщение', m.content || ''); if (nt === null) return; await fetch(`/api/chats/${activeChatId}/messages/${m.id}`, { method:'PUT', headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + localStorage.getItem('token') }, body: JSON.stringify({ content: nt }) }); loadMessages(); });
+          const del = document.createElement('button'); del.className='btn ghost'; del.textContent='Удалить';
+          del.addEventListener('click', async ()=>{ await api(`/api/chats/${activeChatId}/messages/${m.id}`, { method:'DELETE' }); loadMessages(); });
+          tools.appendChild(edit); tools.appendChild(del); wrap.appendChild(tools);
+        }
+        document.getElementById('messages').appendChild(wrap);
+      }
+
+      function initSocket(){
+        socket = io('/', { auth: { token: localStorage.getItem('token') } });
+        socket.on('connect', ()=>{ if (activeChatId) socket.emit('join', { chatId: activeChatId }); });
+        socket.on('message', (m)=>{ if (m.chat_id === activeChatId){ addMessage(m); const box = document.getElementById('messages'); box.scrollTop = box.scrollHeight; } });
+        socket.on('message_deleted', ({ id })=> loadMessages());
+        socket.on('message_updated', (m)=>{ if (m.chat_id === activeChatId) loadMessages(); });
+        socket.on('typing', ({ chatId, user_id, user_name, at }) => {
+          if (chatId !== activeChatId || user_id === currentUser.id) return;
+          typingMap.set(user_id, user_name);
+          renderTyping();
+          setTimeout(()=>{ typingMap.delete(user_id); renderTyping(); }, 1500);
+        });
+      }
+
+      window.addEventListener('DOMContentLoaded', async () => {
+        // Bind theme/logout early so errors below do not block
+        initTheme();
+        const themeBtn = document.getElementById('themeBtn');
+        if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+        const lb = document.getElementById('logoutBtn');
+        if (lb) lb.addEventListener('click', ()=>{ localStorage.removeItem('token'); location.href='/'; });
+
+        currentUser = await me(); if (!currentUser) return location.href = '/';
+        document.getElementById('userTag').textContent = `${currentUser.name}`;
+        try { await loadChats(); } catch (e) { toast('Не удалось загрузить чаты','error'); }
+
+        // Create group chat
+        const ngf = document.getElementById('newGroupForm');
+        if (ngf) ngf.addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          const f = new FormData(ngf);
+          const title = (f.get('title')||'').toString().trim();
+          if (!title) return;
+          await api('/api/chats', { method:'POST', body: JSON.stringify({ title, is_group: 1, memberIds: [] }) });
+          toast('Группа создана'); ngf.reset(); loadChats();
+        });
+
+        // Create direct chat by email only
+        const ndf = document.getElementById('newDMForm');
+        if (ndf) ndf.addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          const f = new FormData(ndf);
+          const email = (f.get('email')||'').toString().trim();
+          if (!email) return;
+          const r = await api('/api/users?q=' + encodeURIComponent(email));
+          if (!r.users || !r.users[0]) return toast('Пользователь не найден','error');
+          const other = r.users[0];
+          const resp = await api('/api/chats', { method:'POST', body: JSON.stringify({ title: other.name || other.email, is_group: 0, memberIds: [other.id] }) });
+          // equal rights: set creator to member
+          await api(`/api/chats/${resp.id}/members`, { method:'POST', body: JSON.stringify({ userId: currentUser.id, role:'member' }) });
+          toast('Личный чат создан'); ndf.reset(); loadChats();
+        });
+        const ci0 = document.getElementById('composer-input');
+        ci0.addEventListener('input', (e)=>{ handleTyping(e); ci0.style.height='auto'; ci0.style.height = Math.min(ci0.scrollHeight, window.innerHeight*0.3) + 'px'; });
+        document.getElementById('composer').addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          if (!activeChatId) return;
+          const f = new FormData(e.target);
+          await fetch(`/api/chats/${activeChatId}/messages`, { method:'POST', headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }, body: f });
+          e.target.reset();
+        });
+        document.getElementById('meetBtn').addEventListener('click', async ()=>{
+          if (!activeChatId) return; const d = await api(`/api/chats/${activeChatId}/jitsi`); window.open(d.url, '_blank');
+        });
+        const del = document.getElementById('deleteBtn');
+        if (del) del.addEventListener('click', async ()=>{
+          if (!activeChatId) return; if (!confirm('Удалить группу безвозвратно?')) return;
+          await api(`/api/chats/${activeChatId}`, { method:'DELETE' });
+          toast('Группа удалена'); location.href = '/teams.html';
+        });
+        document.getElementById('assignTab').addEventListener('click', async ()=>{
+          if (!activeChatId) return; const d = await api(`/api/chats/${activeChatId}/assignments`);
+          const drawer = document.getElementById('drawer');
+          const fmt = (ts)=>{ const dt=new Date(ts); const dd=String(dt.getDate()).padStart(2,'0'); const mm=String(dt.getMonth()+1).padStart(2,'0'); const yy=dt.getFullYear(); const hh=String(dt.getHours()).padStart(2,'0'); const mi=String(dt.getMinutes()).padStart(2,'0'); return `${dd}/${mm}/${yy} ${hh}:${mi}`; };
+          const list = d.assignments.map(a => `
+            <li>
+              <div class=\"row\" style=\"justify-content:space-between\">
+                <div><b>${a.title}</b><div class=\"muted\">${a.description||''}</div></div>
+                <div class=\"muted\">${a.due_at?fmt(a.due_at):'—'}</div>
+              </div>
+              
+            </li>`).join('');
+          drawer.innerHTML = `
+            <div class=\"row\" style=\"justify-content:space-between;align-items:center\"><b>Задания</b><button id=\"drawerClose\" class=\"btn ghost\">Закрыть</button></div>
+            <ul class=\"list\" style=\"margin-top:8px\">${list}</ul>
+            ${(role==='owner'||role==='moderator') ? `
+            <hr style=\"border:0;border-top:1px solid var(--border);margin:8px 0\"/>
+            <form id=\"createAssign\">
+              <label>Заголовок</label>
+              <input name=\"title\" required autocomplete=\"off\" />
+              <label>Описание</label>
+              <textarea name=\"description\" autocomplete=\"off\"></textarea>
+              <div class=\"row\"> 
+                <div style=\"flex:1\"> <label>Дата</label> <input type=\"date\" name=\"due_date\" autocomplete=\"off\" /> </div>
+                <div style=\"width:160px\"> <label>Время</label> <input type=\"time\" name=\"due_time\" autocomplete=\"off\" /> </div>
+              </div>
+              <button class=\"primary\" style=\"margin-top:8px\">Добавить</button>
+            </form>`: ''}
+          `;
+          drawer.style.display='block';
+          drawer.querySelector('#drawerClose').addEventListener('click', ()=> drawer.style.display='none');
+          
+          const caf = drawer.querySelector('#createAssign'); if (caf) caf.addEventListener('submit', async (e)=>{
+            e.preventDefault();
+            const f = new FormData(caf);
+            const body = Object.fromEntries(f.entries());
+            const due_at = body.due_date ? new Date(`${body.due_date}T${body.due_time||'00:00'}`).getTime() : null;
+            await api(`/api/chats/${activeChatId}/assignments`, { method:'POST', body: JSON.stringify({ title: body.title, description: body.description, due_at }) });
+            toast('Задание добавлено'); document.getElementById('assignTab').click();
+          });
+        });
+        document.getElementById('membersBtn').addEventListener('click', async ()=>{
+          if (!activeChatId) return; const d = await api(`/api/chats/${activeChatId}/members`);
+          const drawer = document.getElementById('drawer');
+          const list = d.members.map(u => `
+            <li><div class=\"row\" style=\"justify-content:space-between;gap:8px\">
+              <div>${u.name} <span class=\"tag\">${u.role}</span></div>
+              <div class=\"row\" style=\"gap:6px\">
+                ${(role==='owner'||role==='moderator') && u.id!==currentUser.id ? `<select data-role=\"${u.id}\"> 
+                  <option value=\"member\" ${u.role==='member'?'selected':''}>member</option>
+                  <option value=\"moderator\" ${u.role==='moderator'?'selected':''}>moderator</option>
+                </select> <button class=\"btn\" data-kick=\"${u.id}\">Исключить</button>` : ''}
+              </div>
+            </div></li>`).join('');
+          drawer.innerHTML = `
+            <div class=\"row\" style=\"justify-content:space-between;align-items:center\"><b>Участники</b><button id=\"drawerClose\" class=\"btn ghost\">Закрыть</button></div>
+            <form id=\"inviteForm\" class=\"row\" style=\"margin:8px 0\"><input name=\"email\" placeholder=\"Email участника\" autocomplete=\"off\" /><button class=\"primary\" type=\"submit\">Пригласить</button></form>
+            <ul class=\"list\">${list}</ul>
+          `;
+          drawer.style.display='block';
+          drawer.querySelector('#drawerClose').addEventListener('click', ()=> drawer.style.display='none');
+          const inv = drawer.querySelector('#inviteForm'); inv.addEventListener('submit', async (e)=>{ e.preventDefault(); const q = inv.email.value.trim(); if (!q) return; const r = await api('/api/users?q=' + encodeURIComponent(q)); if (!r.users.length) return toast('Пользователь не найден','error'); await api(`/api/chats/${activeChatId}/members`, { method:'POST', body: JSON.stringify({ userId: r.users[0].id }) }); toast('Добавлен в чат'); document.getElementById('membersBtn').click(); });
+          drawer.querySelectorAll('[data-kick]').forEach(btn => btn.addEventListener('click', async (e)=>{ const uid = e.currentTarget.getAttribute('data-kick'); await api(`/api/chats/${activeChatId}/members/${uid}`, { method:'DELETE' }); toast('Участник удалён'); document.getElementById('membersBtn').click(); }));
+          drawer.querySelectorAll('select[data-role]').forEach(sel => sel.addEventListener('change', async (e)=>{ const uid = e.currentTarget.getAttribute('data-role'); const newRole = e.currentTarget.value; await api(`/api/chats/${activeChatId}/members`, { method:'POST', body: JSON.stringify({ userId: Number(uid), role: newRole }) }); toast('Роль обновлена'); document.getElementById('membersBtn').click(); }));
+        });
+        document.getElementById('createAssign').addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          if (!(role==='owner'||role==='moderator')) return toast('Недостаточно прав','error');
+          const f = new FormData(e.target);
+          const body = Object.fromEntries(f.entries());
+          const due_at = body.due_date ? new Date(`${body.due_date}T${body.due_time||'00:00'}`).getTime() : null;
+          await api(`/api/chats/${activeChatId}/assignments`, { method:'POST', body: JSON.stringify({ title: body.title, description: body.description, due_at }) });
+          toast('Задание добавлено');
+          document.getElementById('assignTab').click();
+          e.target.reset();
+        });
+        // theme/logout already bound above
+        const inv = document.getElementById('inviteForm'); if (inv) inv.addEventListener('submit', async (e)=>{ e.preventDefault(); const q = inv.email.value.trim(); if (!q) return; const r = await api('/api/users?q=' + encodeURIComponent(q)); if (!r.users.length) return toast('Пользователь не найден', 'error'); await api(`/api/chats/${activeChatId}/members`, { method:'POST', body: JSON.stringify({ userId: r.users[0].id }) }); toast('Добавлен в чат'); inv.reset(); loadMembers(); });
+      });
+    </script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="container" style="max-width:1600px">
+      <div class="header">
+        <div class="brand"><span>МАДИ</span></div>
+        <div class="nav"><button id="themeBtn" class="theme-toggle" type="button">Тема</button></div>
+      </div>
+      <div class="row" style="gap:16px; align-items:stretch; flex-wrap:nowrap">
+        <div class="card" style="width:64px;padding:12px;display:flex;flex-direction:column;align-items:center;gap:12px">
+          <a class="btn ghost" href="/teams.html" title="Чаты">💬</a>
+          <a class="btn ghost" href="/schedule.html" title="Расписание">📅</a>
+        </div>
+        <div class="card sidebar" style="width:300px;min-width:260px;flex:1 1 300px;max-width:420px">
+          <div class="row" style="justify-content:space-between;margin-bottom:8px">
+            <b>Команды и чаты</b>
+            <div class="row" style="gap:8px">
+              <span class="tag" id="userTag" title="Профиль"></span>
+              <button class="tag" id="logoutBtn" type="button" title="Выйти">Выйти</button>
+            </div>
+          </div>
+          <ul id="chatList" class="list"></ul>
+          <hr style="border:0;border-top:1px solid var(--border);margin:8px 0"/>
+          <form id="newGroupForm">
+            <label>Новая группа</label>
+            <input name="title" placeholder="Название группы" required />
+            <button class="primary" type="submit" style="margin-top:8px">Создать группу</button>
+          </form>
+          <hr style="border:0;border-top:1px solid var(--border);margin:8px 0"/>
+          <form id="newDMForm">
+            <label>Личный чат с пользователем</label>
+            <input name="email" placeholder="user@madi.ru" required />
+            <button class="primary" type="submit" style="margin-top:8px">Создать чат</button>
+          </form>
+        </div>
+        <div class="card content" style="flex:2 1 520px;display:flex;flex-direction:column;min-width:0">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div class="row" style="gap:12px;align-items:center;margin-right:12px">
+              <h2 id="chatTitle" style="margin:0">Чат</h2>
+              <span id="roleTag" class="tag"></span>
+            </div>
+            <div class="row" style="gap:8px;margin-left:12px"><button id="assignTab" class="btn" type="button">Задания</button><button id="meetBtn" class="btn" type="button">Конференция</button><button id="deleteBtn" class="btn danger" type="button" style="display:none">Удалить группу</button></div>
+          </div>
+          <div id="messages" class="messages"></div>
+          <div id="typing" class="muted" style="display:none;margin-top:6px"></div>
+          <form id="composer" class="composer" style="margin-top:8px">
+            <textarea id="composer-input" name="content" placeholder="Напишите сообщение…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+            <div class="row" style="gap:8px"><input type="file" name="file" /><button class="primary">Отправить</button></div>
+          </form>
+        </div>
+        <div class="card sidebar" style="width:300px">
+          <h3>Участники</h3>
+          <form id="inviteForm" class="row" style="margin-bottom:8px">
+            <input name="email" placeholder="Email участника" />
+            <button class="primary" style="white-space:nowrap">Пригласить</button>
+          </form>
+          <ul id="memberList" class="list"></ul>
+        </div>
+      </div>
+
+      <div id="drawer" class="card" style="display:none;position:fixed;right:16px;top:16px;width:360px;max-width:90vw;z-index:10;max-height:85vh;overflow:auto"></div>
+    </div>
+  </body>
+  </html>
