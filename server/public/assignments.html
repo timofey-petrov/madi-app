@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Задания</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module">
+      import { api, me, toast, initTheme, toggleTheme } from '/app.js';
+      window.addEventListener('DOMContentLoaded', async () => {
+        initTheme();
+        const user = await me(); if (!user) return location.href = '/';
+        async function load(){
+          const chat = document.getElementById('chatId').value.trim();
+          if (!chat) return; 
+          const d = await api(`/api/chats/${chat}/assignments`);
+          const ul = document.getElementById('alist'); ul.innerHTML='';
+          d.assignments.forEach(a => {
+            const li = document.createElement('li');
+            li.innerHTML = `<div class="row" style="justify-content:space-between">
+              <div><b>${a.title}</b><div class="muted">${a.description || ''}</div></div>
+              <div class="muted">до: ${a.due_at ? new Date(a.due_at).toLocaleString() : '—'} • id ${a.id}</div>
+            </div>`;
+            ul.appendChild(li);
+          });
+        }
+        document.getElementById('chatId').addEventListener('change', load);
+        document.getElementById('newAForm').addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          const chat = document.getElementById('chatId').value.trim(); if (!chat) return toast('Укажите ID чата','error');
+          const f = new FormData(e.target);
+          const d = f.get('due_date'); const t = f.get('due_time');
+          const due_at = d ? new Date(`${d}T${t||'00:00'}`).getTime() : null;
+          await api(`/api/chats/${chat}/assignments`, { method:'POST', body: JSON.stringify({ title: f.get('title'), description: f.get('description'), due_at }) });
+          e.target.reset(); toast('Задание создано'); load();
+        });
+        document.getElementById('submitForm').addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          const f = new FormData(e.target);
+          const id = f.get('assignmentId');
+          await fetch(`/api/assignments/${id}/submissions`, { method:'POST', headers:{ Authorization: 'Bearer ' + localStorage.getItem('token') }, body: f });
+          toast('Сдача отправлена'); e.target.reset();
+        });
+        document.getElementById('themeBtn').addEventListener('click', toggleTheme);
+      });
+    </script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="brand"><a href="/">MADI</a></div>
+        <div class="nav"><a href="/chats.html">Чаты</a><button id="themeBtn" class="theme-toggle">Тема</button></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Список заданий</h3>
+          <label>Chat ID</label>
+          <input id="chatId" placeholder="ID чата" />
+          <ul id="alist" class="list" style="margin-top:8px"></ul>
+        </div>
+        <div class="card">
+          <h3>Создать задание</h3>
+          <form id="newAForm">
+            <label>Заголовок</label>
+      <input name="title" placeholder="Лабораторная 1" required autocomplete="off" />
+            <label>Описание</label>
+      <textarea name="description" placeholder="Краткое описание" autocomplete="off"></textarea>
+            <div class="row">
+              <div style="flex:1">
+                <label>Дедлайн — дата</label>
+                <input type="date" name="due_date" />
+              </div>
+              <div style="width:160px">
+                <label>Время</label>
+                <input type="time" name="due_time" />
+              </div>
+            </div>
+            <button class="primary" style="margin-top:8px">Создать</button>
+          </form>
+          <h3>Сдача задания</h3>
+          <form id="submitForm">
+            <label>ID задания</label>
+            <input name="assignmentId" placeholder="ID" required />
+            <label>Файл</label>
+            <input type="file" name="file" required />
+            <button class="primary" style="margin-top:8px">Отправить файл</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </body>
+  </html>
