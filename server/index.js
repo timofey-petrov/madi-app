@@ -30,15 +30,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-app.use(express.static(publicDir));
-app.use('/uploads', express.static(uploadDir)); // Note: open for MVP
-
-// Serve React app (if built) under /app
 const webDist = path.join(__dirname, '..', 'web', 'dist');
-if (fs.existsSync(webDist)) {
-  app.use('/app', express.static(webDist));
-  app.get('/app/*', (req, res) => res.sendFile(path.join(webDist, 'index.html')));
+const hasWebApp = fs.existsSync(webDist);
+app.use(express.static(publicDir));
+if (hasWebApp) {
+  app.use(express.static(webDist));
 }
+app.use('/uploads', express.static(uploadDir)); // Note: open for MVP
 
 // Multer config
 const storage = multer.diskStorage({
@@ -397,8 +395,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// Redirect legacy chat pages to Teams UI
-app.get(['/chats.html', '/chat.html'], (req, res) => res.redirect('/teams.html'));
+// Redirect legacy chat pages to React UI
+app.get(['/chats.html', '/chat.html', '/teams.html'], (req, res) => res.redirect('/chats'));
 
 // Delete chat (owner only)
 app.delete('/api/chats/:chatId', auth, (req, res) => {
@@ -422,10 +420,16 @@ app.delete('/api/chats/:chatId', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Fallback to static index
-app.get('*', (req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
-});
+// Fallback to SPA entry
+if (hasWebApp) {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(webDist, 'index.html'));
+  });
+} else {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+}
 
 // Error handler with friendlier messages
 app.use((err, req, res, next) => {

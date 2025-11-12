@@ -1,5 +1,5 @@
 services:
-  madi-app:
+  backend:
     build:
       context: ./server
     ports:
@@ -12,3 +12,11 @@ services:
       - ./server/uploads:/app/uploads
     restart: unless-stopped
 
+  frontend:
+    build:
+      context: ./web
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
