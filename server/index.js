@@ -32,9 +32,20 @@ const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 const webDist = path.join(__dirname, '..', 'web', 'dist');
 const hasWebApp = fs.existsSync(webDist);
-app.use(express.static(publicDir));
+
+// Redirect legacy HTML entrypoints before static middleware
+const legacyPaths = ['/chats.html', '/chat.html', '/teams.html', '/teams'];
+app.use((req, res, next) => {
+  if (legacyPaths.includes(req.path)) {
+    return res.redirect(301, '/chats');
+  }
+  next();
+});
+
 if (hasWebApp) {
   app.use(express.static(webDist));
+} else {
+  app.use(express.static(publicDir));
 }
 app.use('/uploads', express.static(uploadDir)); // Note: open for MVP
 
@@ -394,9 +405,6 @@ io.on('connection', (socket) => {
     io.to(`chat_${chatId}`).emit('typing', { chatId, user_id: socket.user.id, user_name: socket.user.name, at: Date.now() });
   });
 });
-
-// Redirect legacy chat pages to React UI
-app.get(['/chats.html', '/chat.html', '/teams.html'], (req, res) => res.redirect('/chats'));
 
 // Delete chat (owner only)
 app.delete('/api/chats/:chatId', auth, (req, res) => {
